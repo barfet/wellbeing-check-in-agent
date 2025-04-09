@@ -99,7 +99,7 @@ ehthumbs.db
 Thumbs.db
 
 # Poetry
-poetry.lock
+# poetry.lock # No longer needed
 
 # IDEs
 .idea/

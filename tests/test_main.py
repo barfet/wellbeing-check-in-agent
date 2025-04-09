@@ -1,15 +1,15 @@
 import pytest
-from httpx import AsyncClient
+from fastapi.testclient import TestClient
 
 # Import the FastAPI app instance
 # Use absolute import path based on project structure
-from src.app.main import app
+from app.main import app
+
+client = TestClient(app)
 
 
-@pytest.mark.asyncio
-async def test_health_check():
+def test_health_check():
     """Test the /health endpoint."""
-    async with AsyncClient(app=app, base_url="http://test") as client:
-        response = await client.get("/health")
+    response = client.get("/health")
     assert response.status_code == 200
     assert response.json() == {"status": "OK"}

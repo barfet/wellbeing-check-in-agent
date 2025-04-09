@@ -1,0 +1,8 @@
+langgraph
+pydantic
+fastapi
+httpx
+pytest
+pytest-asyncio
+ruff
+uvicorn

@@ -1,27 +1,4 @@
-[tool.poetry]
-name = "reflective-learning-agent"
-version = "0.1.0"
-description = "AI Agent for guided reflection using LangGraph and LLMs"
-authors = ["Your Name <you@example.com>"] # Placeholder - Please update!
-license = "MIT"
-readme = "README.md"
-packages = [{include = "app", from = "src"}]
-
-[tool.poetry.dependencies]
-python = ">=3.10,<3.13" # Specify upper bound for better dependency resolution
-fastapi = "^0.111.0"
-uvicorn = {extras = ["standard"], version = "^0.29.0"}
-
-[tool.poetry.group.dev.dependencies]
-ruff = "^0.4.4"
-pytest = "^8.1.1"
-pytest-asyncio = "^0.23.5"  # For async test functions
-httpx = "^0.27.0" # For async API testing
-
-[build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
-
+# Keep other tool configurations below if they exist
 [tool.ruff]
 # Exclude a few common directories.
 exclude = [
