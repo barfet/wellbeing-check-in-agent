@@ -67,13 +67,12 @@ async def test_e2e_conversation_flow(async_client: AsyncClient):
     assert "next_state" in data_1
     current_state = data_1["next_state"]
     assert current_state["topic"] == topic
-    # History should contain initiate and first probe question
-    assert len(current_state["history"]) == 2 
-    assert current_state["history"][0][0] == "agent" # Initiate Q
-    assert current_state["history"][1] == ["agent", first_agent_question] # Probe Q
-    assert current_state["current_question"] == first_agent_question
+    # History should contain only the initiate agent question after the first turn
+    assert len(current_state["history"]) == 1
+    assert current_state["history"][0][0] == "agent"
+    assert current_state["history"][0][1] == first_agent_question
 
-    # --- Turn 2: User Response 1 --- 
+    # --- Turn 2: User provides first response ---
     logger.info("--- E2E: Turn 2 (User Response 1) ---")
     payload_2 = {"user_input": user_response_1, "current_state": current_state}
     response_2 = await async_client.post(API_ENDPOINT, json=payload_2, timeout=90.0)
@@ -91,10 +90,10 @@ async def test_e2e_conversation_flow(async_client: AsyncClient):
     assert "next_state" in data_2
     current_state = data_2["next_state"]
     assert current_state["topic"] == topic
-    # History: Init Q, Probe Q1, User A1, Probe Q2
-    assert len(current_state["history"]) == 4 
-    assert current_state["history"][2] == ["user", user_response_1]
-    assert current_state["current_question"] == second_agent_question
+    # History after turn 2: Init Q, User A1, Probe Q1
+    assert len(current_state["history"]) == 3
+    assert current_state["history"][1] == ["user", user_response_1]
+    assert current_state["history"][2] == ["agent", second_agent_question]
 
     # --- Turn 3: User Response 2 (leading to summary) --- 
     logger.info("--- E2E: Turn 3 (User Response 2 -> Summary) ---")

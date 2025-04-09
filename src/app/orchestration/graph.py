@@ -1,7 +1,9 @@
 from langgraph.graph import StateGraph, END
+from functools import partial # Import partial
 
 from .state import AgentState
 from ..services.llm_client import LLMClient
+from ..dependencies import get_llm_client # Import the dependency function
 import logging
 import asyncio
 
@@ -9,12 +11,10 @@ import asyncio
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Instantiate LLM Client (consider dependency injection for more complex scenarios)
-# For simplicity in MVP, we can instantiate it here or within the node.
-# Instantiating outside might be slightly more efficient if reused across nodes.
-llm_client = LLMClient()
+# Remove the global LLM Client instantiation
+# llm_client = LLMClient()
 
-# Define node functions
+# Define node functions - add llm_client parameter where needed
 async def initiate(state: AgentState) -> AgentState:
     # Only generate initial question if history is empty
     if not state.history:
@@ -40,7 +40,7 @@ async def initiate(state: AgentState) -> AgentState:
     return state
 
 
-async def probe(state: AgentState) -> AgentState:
+async def probe(state: AgentState, llm_client: LLMClient) -> AgentState:
     logger.info("--- Running Prober Node ---")
     state.error_message = None # Clear previous errors
 
@@ -69,7 +69,7 @@ async def probe(state: AgentState) -> AgentState:
     logger.info(f"Generating probe question with prompt: {prompt[:100]}..." ) # Log snippet
 
     try:
-        # Ensure LLM Client is available
+        # Ensure LLM Client is available (using the injected client)
         if not llm_client.api_key:
              raise ValueError("OpenAI API key is not configured for LLMClient.")
 
@@ -96,7 +96,7 @@ async def probe(state: AgentState) -> AgentState:
     return state
 
 
-async def summarize(state: AgentState) -> AgentState:
+async def summarize(state: AgentState, llm_client: LLMClient) -> AgentState:
     logger.info("--- Running Summarizer Node ---")
     state.error_message = None # Clear previous errors
     state.summary = None # Clear previous summary
@@ -113,7 +113,7 @@ async def summarize(state: AgentState) -> AgentState:
     logger.info("Generating summary with prompt...")
 
     try:
-        # Ensure LLM Client is available
+        # Ensure LLM Client is available (using the injected client)
         if not llm_client.api_key:
             raise ValueError("OpenAI API key is not configured for LLMClient.")
 
@@ -136,7 +136,7 @@ async def summarize(state: AgentState) -> AgentState:
     return state
 
 
-async def check_summary(state: AgentState) -> AgentState:
+async def check_summary(state: AgentState, llm_client: LLMClient) -> AgentState:
     logger.info("--- Running Summary Checker Node ---")
     state.error_message = None # Clear previous errors
     state.needs_correction = True # Default to needing correction unless validation passes
@@ -159,6 +159,7 @@ async def check_summary(state: AgentState) -> AgentState:
     logger.info("Checking summary coherence with LLM...")
 
     try:
+        # Ensure LLM Client is available (using the injected client)
         if not llm_client.api_key:
             raise ValueError("OpenAI API key is not configured for LLMClient.")
 
@@ -167,7 +168,8 @@ async def check_summary(state: AgentState) -> AgentState:
 
         logger.info(f"LLM response for summary check: '{response_text}'")
 
-        if "YES" in response_text:
+        # Use stricter check
+        if response_text.startswith("YES"):
             state.needs_correction = False
             logger.info("Summary deemed coherent.")
         else:
@@ -210,14 +212,18 @@ def route_after_summary_check(state: AgentState) -> str:
 
 
 # --- Define the Graph --- 
+
+# Get the LLM client instance using the dependency function
+llm_dependency = get_llm_client()
+
 # Define the graph
 workflow = StateGraph(AgentState)
 
-# Add the nodes
-workflow.add_node("initiate", initiate)
-workflow.add_node("probe", probe)
-workflow.add_node("summarize", summarize)
-workflow.add_node("check_summary", check_summary)
+# Add the nodes, using partial to inject the llm_client dependency
+workflow.add_node("initiate", initiate) # Initiate doesn't need the client
+workflow.add_node("probe", partial(probe, llm_client=llm_dependency))
+workflow.add_node("summarize", partial(summarize, llm_client=llm_dependency))
+workflow.add_node("check_summary", partial(check_summary, llm_client=llm_dependency))
 
 # Set the entry point
 workflow.set_entry_point("initiate")
@@ -279,7 +285,8 @@ async def run_graph_example():
 
 if __name__ == "__main__":
     # Make sure OPENAI_API_KEY is set in environment or .env file
-    if llm_client.api_key:
+    # Check key via the dependency getter
+    if get_llm_client().api_key:
         print("Running graph example...")
         asyncio.run(run_graph_example())
     else:
