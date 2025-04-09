@@ -55,4 +55,5 @@ skip-magic-trailing-comma = false
 line-ending = "auto"
 
 [tool.pytest.ini_options]
-pythonpath = ["src"] 
+pythonpath = ["src"]
+asyncio_mode = "strict"
