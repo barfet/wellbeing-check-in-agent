@@ -7,9 +7,10 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../src')))
 
 from app.orchestration.state import AgentState
-# Import the node functions directly, not the compiled graph
-from app.orchestration.graph import initiate, probe
-from app.services.llm_client import LLMClient
+# Import the logic functions directly from the new module
+from app.orchestration.graph_logic import run_initiate, run_probe
+# Import the interface if needed for type hinting (though LLMClient is used here)
+from app.services.llm_client import LLMClient, LLMInterface
 
 # Load environment variables (especially OPENAI_API_KEY for the test)
 load_dotenv()
@@ -34,7 +35,7 @@ async def test_initiate_and_probe_integration():
 
     # --- Initiate Step (direct call) ---
     print(f"\n[Integration Test] Running initiate for topic: {initial_topic}")
-    state_after_initiate = await initiate(initial_state)
+    state_after_initiate = await run_initiate(initial_state)
     print(f"[Integration Test] State after initiate: {state_after_initiate}")
 
     # Basic assertions for initiate output
@@ -58,7 +59,7 @@ async def test_initiate_and_probe_integration():
 
     # --- Probe Step (direct call) ---
     # Pass the instantiated LLM client to the probe function
-    state_after_probe = await probe(state_before_probe, llm_client=llm_client)
+    state_after_probe = await run_probe(state_before_probe, llm_client=llm_client)
     print(f"[Integration Test] State after probe: {state_after_probe}")
 
     # --- Assertions for Probe Output ---

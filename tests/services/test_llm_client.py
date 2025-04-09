@@ -61,9 +61,9 @@ def test_llm_client_init_no_api_key(mock_logger_warning, mock_getenv):
     mock_getenv.side_effect = getenv_side_effect
     
     LLMClient()
-    # Assert warning was called
+    # Assert warning was called with the correct message
     mock_logger_warning.assert_called_once_with(
-        "OPENAI_API_KEY not found in environment variables."
+        "OPENAI_API_KEY environment variable not set." # Updated expected message
     )
     # Verify os.getenv was called for the API key
     mock_getenv.assert_any_call("OPENAI_API_KEY")

@@ -1,84 +1,97 @@
 import os
-import openai
-from dotenv import load_dotenv
+from abc import ABC, abstractmethod
+from typing import Protocol, runtime_checkable, Optional
 import logging
+
+from dotenv import load_dotenv
+from openai import AsyncOpenAI
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-class LLMClient:
-    """
-    A wrapper class for interacting with the OpenAI API.
-    Handles API key loading, prompt execution, and basic error handling.
-    """
-    def __init__(self):
-        """
-        Initializes the LLMClient, loads the API key from environment variables.
-        """
-        load_dotenv()  # Load environment variables from .env file if present
-        self.api_key = os.getenv("OPENAI_API_KEY")
-        if not self.api_key:
-            logger.warning("OPENAI_API_KEY not found in environment variables.")
-            # Consider raising an error or handling this case more robustly
-            # For now, we allow initialization but API calls will fail.
-        else:
-            # Setting the API key globally for the openai library instance
-            # Note: If managing multiple keys or instances, a different approach might be needed.
-            openai.api_key = self.api_key
-            logger.info("LLMClient initialized with API key.")
+# Load environment variables from .env file
+load_dotenv()
 
-    async def get_completion(self, prompt: str, model: str = "gpt-4o-mini") -> str:
-        """
-        Gets a completion from the OpenAI API based on the provided prompt.
+# --- LLM Interface Definition (Dependency Inversion) ---
+
+@runtime_checkable
+class LLMInterface(Protocol):
+    """Abstract interface for Language Model Client interaction."""
+    
+    @property
+    @abstractmethod
+    def api_key(self) -> Optional[str]:
+        """Returns the API key used by the client, if configured."""
+        ...
+
+    @abstractmethod
+    async def get_completion(self, prompt: str, model: str = "gpt-4o-mini", **kwargs) -> str:
+        """Generates a text completion using the language model.
 
         Args:
-            prompt: The input prompt for the LLM.
-            model: The model to use for completion (defaults to gpt-4o-mini).
+            prompt: The prompt to send to the model.
+            model: The specific model to use (defaulting to a common choice).
+            **kwargs: Additional arguments for the OpenAI client.
 
         Returns:
-            The text response from the LLM.
-
+            The generated text completion.
+            
         Raises:
-            openai.error.OpenAIError: If there's an issue with the API call.
-            ValueError: If the API key is missing.
+             ValueError: If the API key is missing.
+             Exception: Propagates exceptions from the underlying API call.
         """
-        if not self.api_key:
-             logger.error("OpenAI API key is missing. Cannot make API calls.")
-             raise ValueError("OpenAI API key is missing. Cannot make API calls.")
+        ...
+
+# --- Concrete Implementation ---
+
+class LLMClient(LLMInterface): # Implement the interface
+    """Client for interacting with the OpenAI API, implementing LLMInterface."""
+
+    def __init__(self):
+        """Initializes the asynchronous OpenAI client."""
+        self._api_key = os.getenv("OPENAI_API_KEY")
+        if not self._api_key:
+            # Use logger.warning instead of print
+            logger.warning("OPENAI_API_KEY environment variable not set.") 
+            self.client = None # Explicitly set client to None
+        else:
+            self.client = AsyncOpenAI(api_key=self._api_key)
+
+    @property
+    def api_key(self) -> Optional[str]:
+        """Returns the configured OpenAI API key."""
+        return self._api_key
+
+    async def get_completion(self, prompt: str, model: str = "gpt-4o-mini", **kwargs) -> str:
+        """Generates a text completion using the configured OpenAI model."""
+        if not self.client:
+            raise ValueError("OpenAI client not initialized. API key may be missing.")
 
         try:
-            logger.info(f"Requesting completion from model '{model}'...")
-            # Note: Using ChatCompletion for newer models like gpt-4o-mini/gpt-4
-            # Using the async client is recommended for FastAPI/async applications
-            client = openai.AsyncOpenAI() # Initialize async client here
-            response = await client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": "You are a helpful assistant designed to facilitate reflective learning conversations."}, # Added more specific system prompt
-                    {"role": "user", "content": prompt}
-                ]
-                # Add other parameters like temperature, max_tokens etc. if needed
+            response = await self.client.chat.completions.create(
+                model=model, 
+                messages=[{"role": "user", "content": prompt}],
+                 **kwargs # Pass through any extra arguments
             )
-            completion = response.choices[0].message.content
-            if completion is None:
-                 logger.warning("Received None as completion content from OpenAI.")
-                 completion = "" # Return empty string if content is None
+            # Basic error handling for response structure
+            if response.choices and response.choices[0].message:
+                content = response.choices[0].message.content
+                return content.strip() if content else "" 
             else:
-                 completion = completion.strip()
-
-            logger.info("Completion received successfully.")
-            return completion
-        except openai.AuthenticationError as e:
-             logger.error(f"OpenAI Authentication Error: Check your API key. Details: {e}")
-             raise
-        except openai.APIError as e: # Catching more specific API errors
-            logger.error(f"OpenAI API Error: {e}")
-            # Implement basic retry logic here if desired (e.g., for 5xx errors)
-            raise
+                 # Log unexpected response structure
+                 print(f"Warning: Unexpected OpenAI response structure: {response}")
+                 return "" # Return empty string or raise error?
         except Exception as e:
-            logger.error(f"An unexpected error occurred during LLM interaction: {e}")
-            raise
+            # Log or handle specific OpenAI errors if needed
+            print(f"Error during OpenAI API call: {e}")
+            raise # Re-raise the exception to be handled by the caller
+
+    # Deprecated generate method - replace usages with get_completion
+    async def generate(self, prompt: str, model: str = "gpt-4o-mini") -> str:
+        """Deprecated: Use get_completion instead."""
+        print("Warning: LLMClient.generate is deprecated. Use get_completion.")
+        return await self.get_completion(prompt, model=model)
 
 # Example usage (optional, for testing purposes)
 # async def main():
