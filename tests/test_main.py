@@ -1,9 +1,9 @@
 import pytest
+from httpx import AsyncClient
 
 # Import the FastAPI app instance
-# Use absolute import path based on structure: src/app/main.py
-from app.main import app
-from httpx import AsyncClient
+# Use absolute import path based on project structure
+from src.app.main import app
 
 
 @pytest.mark.asyncio
