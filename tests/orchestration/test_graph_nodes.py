@@ -188,11 +188,35 @@ async def test_summarize_node_success(mock_llm_client: AsyncMock): # Inject the 
 
     assert result_state.summary == "This is the mocked summary."
     assert result_state.error_message is None
+    assert result_state.correction_attempts == 1 # First attempt
     mock_llm_client.get_completion.assert_called_once()
     call_args, _ = mock_llm_client.get_completion.call_args
     prompt_arg = call_args[0]
     assert "A1" in prompt_arg
     assert "A2" in prompt_arg
+    assert "PREVIOUS ATTEMPT FEEDBACK" not in prompt_arg # Ensure no feedback on first try
+
+@pytest.mark.asyncio
+async def test_summarize_node_with_feedback(mock_llm_client: AsyncMock):
+    """Test summarize node incorporates feedback into the prompt."""
+    feedback = "Missing the part about the deadline."
+    mock_llm_client.get_completion.return_value = "Revised summary including deadline."
+
+    initial_state = AgentState(
+        history=[("agent", "Q"), ("user", "A")],
+        correction_feedback=feedback,
+        correction_attempts=1 # Simulating entry for the 2nd attempt
+    )
+    result_state = await summarize(initial_state, llm_client=mock_llm_client)
+
+    assert result_state.summary == "Revised summary including deadline."
+    assert result_state.error_message is None
+    assert result_state.correction_attempts == 2 # Incremented
+    mock_llm_client.get_completion.assert_called_once()
+    call_args, _ = mock_llm_client.get_completion.call_args
+    prompt_arg = call_args[0]
+    assert feedback in prompt_arg
+    assert "PREVIOUS ATTEMPT FEEDBACK" in prompt_arg
 
 @pytest.mark.asyncio
 # Remove @patch decorator
@@ -205,7 +229,9 @@ async def test_summarize_node_llm_error(mock_llm_client: AsyncMock): # Inject th
     # Pass the mock client
     result_state = await summarize(initial_state, llm_client=mock_llm_client)
 
-    assert "(Summary generation encountered an error.)" in result_state.summary
+    # Check for attempt number in the summary string
+    assert f"(Summary generation attempt {result_state.correction_attempts} encountered an error.)" in result_state.summary
+    assert result_state.correction_attempts == 1
     assert "Error generating summary" in result_state.error_message
     assert str(test_exception) in result_state.error_message
 
@@ -219,7 +245,9 @@ async def test_summarize_node_llm_empty_response(mock_llm_client: AsyncMock): # 
     # Pass the mock client
     result_state = await summarize(initial_state, llm_client=mock_llm_client)
 
-    assert "(Summary generation failed - empty response)" in result_state.summary
+    # Check for attempt number in the summary string
+    assert f"(Summary generation attempt {result_state.correction_attempts} failed - empty response)" in result_state.summary
+    assert result_state.correction_attempts == 1
     assert "LLM failed to generate a summary" in result_state.error_message
 
 @pytest.mark.asyncio
@@ -230,7 +258,9 @@ async def test_summarize_node_empty_history():
     # Pass dummy mock
     result_state = await summarize(initial_state, llm_client=AsyncMock())
 
-    assert result_state.summary is None
+    # Check for the specific skipped summary string
+    assert result_state.summary == "(Summary generation skipped: No history)"
+    assert result_state.correction_attempts == 1 # Still increments attempt
     assert "Internal Error: Summarizer requires history." in result_state.error_message
 
 # --- Tests for check_summary node --- 
@@ -249,19 +279,21 @@ async def test_check_summary_node_approves(mock_llm_client: AsyncMock): # Inject
     result_state = await check_summary(initial_state, llm_client=mock_llm_client)
 
     assert result_state.needs_correction is False
-    assert result_state.error_message is None
+    assert result_state.correction_feedback is None
+    assert result_state.error_message is None # Should remain None on success
     mock_llm_client.get_completion.assert_called_once()
     call_args, kwargs = mock_llm_client.get_completion.call_args
     prompt_arg = call_args[0]
     assert "A valid summary." in prompt_arg
     assert "input" in prompt_arg
-    assert kwargs.get("model") == "gpt-3.5-turbo" # Verify model used for check
+    assert kwargs.get("model") == "gpt-4o-mini" # Verify model used for check
 
 @pytest.mark.asyncio
 # Remove @patch decorator
 async def test_check_summary_node_rejects(mock_llm_client: AsyncMock): # Inject the fixture
     """Test check_summary node when LLM rejects (responds NO or other)."""
     response_text = "NO, it is not relevant."
+    expected_feedback = "it is not relevant"
     mock_llm_client.get_completion.return_value = response_text
 
     initial_state = AgentState(
@@ -272,9 +304,8 @@ async def test_check_summary_node_rejects(mock_llm_client: AsyncMock): # Inject 
     result_state = await check_summary(initial_state, llm_client=mock_llm_client)
 
     assert result_state.needs_correction is True
-    assert "Summary quality check indicated potential issues" in result_state.error_message
-    # Check error includes the UPPERCASE LLM response
-    assert response_text.upper() in result_state.error_message 
+    assert result_state.correction_feedback == expected_feedback # Check feedback is extracted
+    assert result_state.error_message is None # Error message not set, only feedback
     mock_llm_client.get_completion.assert_called_once()
 
 @pytest.mark.asyncio

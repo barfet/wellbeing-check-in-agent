@@ -154,4 +154,7 @@ ruff check src/ tests/
 
 # Format code (Ruff)
 ruff format src/ tests/
+
+# Docker
+docker stop reflective-agent && docker rm reflective-agent && docker build -t reflective-learning-agent . && docker run -d -p 8000:8000 --name reflective-agent --env-file .env reflective-learning-agent
 ```

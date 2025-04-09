@@ -28,13 +28,13 @@ class LLMClient:
             openai.api_key = self.api_key
             logger.info("LLMClient initialized with API key.")
 
-    async def get_completion(self, prompt: str, model: str = "gpt-3.5-turbo") -> str:
+    async def get_completion(self, prompt: str, model: str = "gpt-4o-mini") -> str:
         """
         Gets a completion from the OpenAI API based on the provided prompt.
 
         Args:
             prompt: The input prompt for the LLM.
-            model: The model to use for completion (defaults to gpt-3.5-turbo).
+            model: The model to use for completion (defaults to gpt-4o-mini).
 
         Returns:
             The text response from the LLM.
@@ -49,7 +49,7 @@ class LLMClient:
 
         try:
             logger.info(f"Requesting completion from model '{model}'...")
-            # Note: Using ChatCompletion for newer models like gpt-3.5-turbo/gpt-4
+            # Note: Using ChatCompletion for newer models like gpt-4o-mini/gpt-4
             # Using the async client is recommended for FastAPI/async applications
             client = openai.AsyncOpenAI() # Initialize async client here
             response = await client.chat.completions.create(

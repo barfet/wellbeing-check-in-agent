@@ -14,6 +14,12 @@ class AgentState(BaseModel):
         summary: The generated summary of the reflection.
         needs_correction: Flag indicating if the summary needs correction.
         error_message: Any error message encountered during the process.
+        probe_count: The count of probes made to the agent.
+        # Fields for advanced summary correction
+        correction_attempts: int = 0
+        correction_feedback: Optional[str] = None
+        # Field for sentiment analysis
+        last_sentiment: Optional[str] = None
     """
 
     topic: Optional[str] = None
@@ -21,4 +27,10 @@ class AgentState(BaseModel):
     current_question: Optional[str] = None
     summary: Optional[str] = None
     needs_correction: bool = False
-    error_message: Optional[str] = None 
+    error_message: Optional[str] = None
+    probe_count: int = 0
+    # Fields for advanced summary correction
+    correction_attempts: int = 0
+    correction_feedback: Optional[str] = None
+    # Field for sentiment analysis
+    last_sentiment: Optional[str] = None 

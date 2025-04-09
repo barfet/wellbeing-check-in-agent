@@ -39,7 +39,7 @@ async def test_llm_client_get_completion_success(mock_async_openai_class, mock_o
     assert response == "Mocked LLM Response"
     mock_async_openai_class.assert_called_once()
     mock_openai_client.chat.completions.create.assert_called_once_with(
-        model="gpt-3.5-turbo",
+        model="gpt-4o-mini",
         messages=[
             {"role": "system", "content": "You are a helpful assistant designed to facilitate reflective learning conversations."}, # Added more specific system prompt
             {"role": "user", "content": prompt}

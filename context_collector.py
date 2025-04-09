@@ -109,7 +109,7 @@ def format_for_chatgpt(contents: Dict[str, str]) -> Tuple[str, Dict[str, int]]:
     # Count tokens for different models
     token_counts = {
         "gpt-4": count_tokens(final_output, "gpt-4"),
-        "gpt-3.5-turbo": count_tokens(final_output, "gpt-3.5-turbo"),
+        "gpt-4o-mini": count_tokens(final_output, "gpt-4o-mini"),
         "claude-2": count_tokens(final_output, "gpt-4"),  # Claude uses similar tokenization
     }
     
@@ -124,7 +124,7 @@ def print_token_info(token_counts: Dict[str, int]) -> None:
     # Model context limits
     model_limits = {
         "gpt-4": 8192,
-        "gpt-3.5-turbo": 4096,
+        "gpt-4o-mini": 4096,
         "claude-2": 100000
     }
     

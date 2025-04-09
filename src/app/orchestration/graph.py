@@ -43,6 +43,8 @@ async def initiate(state: AgentState) -> AgentState:
 async def probe(state: AgentState, llm_client: LLMClient) -> AgentState:
     logger.info("--- Running Prober Node ---")
     state.error_message = None # Clear previous errors
+    state.probe_count += 1 # Increment probe count
+    logger.info(f"Probe attempt number: {state.probe_count}")
 
     if not state.history:
         logger.warning("Probe node called with empty history.")
@@ -100,20 +102,38 @@ async def summarize(state: AgentState, llm_client: LLMClient) -> AgentState:
     logger.info("--- Running Summarizer Node ---")
     state.error_message = None # Clear previous errors
     state.summary = None # Clear previous summary
+    state.current_question = None # Clear question when starting summary path
+    
+    # Increment attempt count *before* generating summary
+    # Note: This means the first attempt is attempt 1
+    state.correction_attempts += 1
+    logger.info(f"Summary generation attempt: {state.correction_attempts}")
 
     if not state.history:
         logger.warning("Summarizer node called with empty history.")
         state.error_message = "Internal Error: Summarizer requires history."
+        state.summary = "(Summary generation skipped: No history)"
         return state
 
-    # Format history for the prompt
+    # Base prompt
     formatted_history = "\n".join([f"{spk}: {utt}" for spk, utt in state.history])
-    prompt = f"Based on the following conversation history between an agent and a user:\n\n{formatted_history}\n\nPlease provide a concise summary of the key points discussed, focusing on the user's reflections, challenges mentioned, and any potential learnings or insights revealed. Structure it as a short paragraph or a few bullet points."
+    base_prompt = (
+        f"Based on the following conversation history between an agent and a user:\n\n{formatted_history}\n\n" 
+        f"Please provide a concise summary of the key points discussed, focusing on the user's reflections, challenges mentioned, and any potential learnings or insights revealed. "
+        f"Structure it as a short paragraph or a few bullet points."
+    )
+
+    # Add feedback if this is a correction attempt
+    prompt = base_prompt
+    if state.correction_feedback:
+        logger.info(f"Incorporating previous correction feedback: {state.correction_feedback}")
+        prompt += f"\n\nPREVIOUS ATTEMPT FEEDBACK: {state.correction_feedback}\nPlease generate a *revised* summary addressing this feedback."
+        # Clear feedback after using it
+        # state.correction_feedback = None # Let check_summary clear it on next run
 
     logger.info("Generating summary with prompt...")
 
     try:
-        # Ensure LLM Client is available (using the injected client)
         if not llm_client.api_key:
             raise ValueError("OpenAI API key is not configured for LLMClient.")
 
@@ -121,16 +141,16 @@ async def summarize(state: AgentState, llm_client: LLMClient) -> AgentState:
 
         if not summary_text:
             logger.warning("LLM returned an empty summary.")
-            state.summary = "(Summary generation failed - empty response)"
+            state.summary = f"(Summary generation attempt {state.correction_attempts} failed - empty response)"
             state.error_message = "LLM failed to generate a summary."
         else:
             state.summary = summary_text
-            logger.info(f"Generated summary: {summary_text[:100]}...") # Log snippet
+            logger.info(f"Generated summary (Attempt {state.correction_attempts}): {summary_text[:100]}...") 
 
     except Exception as e:
         logger.error(f"Error during LLM call in Summarizer node: {e}", exc_info=True)
         state.error_message = f"Error generating summary: {e}"
-        state.summary = "(Summary generation encountered an error.)"
+        state.summary = f"(Summary generation attempt {state.correction_attempts} encountered an error.)"
 
     logger.debug(f"Updated State after summarize: {state}")
     return state
@@ -138,76 +158,161 @@ async def summarize(state: AgentState, llm_client: LLMClient) -> AgentState:
 
 async def check_summary(state: AgentState, llm_client: LLMClient) -> AgentState:
     logger.info("--- Running Summary Checker Node ---")
-    state.error_message = None # Clear previous errors
-    state.needs_correction = True # Default to needing correction unless validation passes
+    # Reset fields for this check
+    state.error_message = None 
+    state.needs_correction = True # Default to needing correction
+    state.correction_feedback = None # Clear previous feedback
 
     if not state.summary or "(Summary generation" in state.summary:
-        logger.warning(f"Skipping summary check because summary is missing or indicates generation failure: '{state.summary}'")
-        state.error_message = "Summary check skipped due to missing or failed summary."
-        # Keep needs_correction=True to potentially loop back or signal issue
+        logger.warning(f"Skipping summary check: Missing or failed summary ('{state.summary}')")
+        state.error_message = "Summary check skipped due to missing/failed summary."
         return state
 
     if not state.history:
-        logger.warning("Skipping summary check because history is missing.")
+        logger.warning("Skipping summary check: Missing history.")
         state.error_message = "Summary check skipped due to missing history."
         return state
 
-    # Provide context for the check
+    # Provide context and ask for specific feedback
     formatted_history = "\n".join([f"{spk}: {utt}" for spk, utt in state.history])
-    prompt = f"Consider the following conversation history:\n\n{formatted_history}\n\nNow consider this summary generated from the conversation:\n\nSUMMARY:\n{state.summary}\n\nIs this summary relevant and coherent based *only* on the provided conversation history? Does it accurately reflect the main points discussed? Answer with only YES or NO."
+    prompt = (
+        f"Review the following conversation history:\n\n{formatted_history}\n\n" 
+        f"Now review this generated summary:\n\nSUMMARY:\n{state.summary}\n\n" 
+        f"Critique this summary based on the history. Is it accurate, relevant, and does it capture the key points, feelings, and challenges discussed? "
+        f"If the summary is good and requires no changes, respond with only YES. "
+        f"If the summary is lacking or inaccurate, respond with NO, followed by a brief explanation of what specific information is missing or needs correction based *only* on the conversation history."
+    )
 
-    logger.info("Checking summary coherence with LLM...")
+    logger.info("Checking summary coherence and requesting feedback...")
 
     try:
-        # Ensure LLM Client is available (using the injected client)
         if not llm_client.api_key:
             raise ValueError("OpenAI API key is not configured for LLMClient.")
 
-        response = await llm_client.get_completion(prompt, model="gpt-3.5-turbo") # Use a reliable model
-        response_text = response.strip().upper()
+        response = await llm_client.get_completion(prompt, model="gpt-4o-mini") # Use a capable model for critique
+        response_text = response.strip()
 
         logger.info(f"LLM response for summary check: '{response_text}'")
 
-        # Use stricter check
-        if response_text.startswith("YES"):
+        if response_text.upper().startswith("YES"):
             state.needs_correction = False
-            logger.info("Summary deemed coherent.")
+            logger.info("Summary deemed sufficient.")
         else:
-            state.needs_correction = True # Keep as True if not explicitly YES
-            logger.warning(f"Summary deemed potentially incoherent or LLM response unclear ('{response_text}'). Setting needs_correction=True.")
-            state.error_message = f"Summary quality check indicated potential issues (LLM response: '{response_text}')."
+            state.needs_correction = True 
+            # Attempt to extract feedback after potential "NO"
+            feedback = response_text
+            if response_text.upper().startswith("NO"):
+                # Try to remove the leading "NO" and surrounding punctuation/whitespace
+                parts = response_text.split(maxsplit=1)
+                if len(parts) > 1:
+                    feedback = parts[1].strip(".,:;\n ")
+            
+            if not feedback or feedback.upper() == "NO":
+                feedback = "Summary deemed insufficient, but no specific feedback provided." 
+            
+            state.correction_feedback = feedback
+            logger.warning(f"Summary needs correction. Feedback: '{feedback}'")
+            # Optionally set error message, but feedback field is primary
+            # state.error_message = f"Summary needs correction. Feedback: {feedback}"
 
     except Exception as e:
         logger.error(f"Error during LLM call in Summary Checker node: {e}", exc_info=True)
         state.error_message = f"Error checking summary quality: {e}"
         state.needs_correction = True # Assume correction needed if check fails
+        state.correction_feedback = "Failed to perform summary check due to an error."
 
     logger.debug(f"Updated State after check_summary: {state}")
     return state
 
 
+async def wait_for_input(state: AgentState) -> AgentState:
+    """Dummy node representing a suspension point to wait for user input."""
+    logger.info("--- Reached Wait State (Suspending for user input) ---")
+    # No state changes, graph execution stops here for this invocation.
+    return state
+
+
 # --- Define Conditional Logic --- 
+
+# Define max probes constant (fallback mechanism)
+MAX_PROBE_ATTEMPTS = 5 # Increase fallback slightly
+
+async def should_continue_probing(state: AgentState, llm_client: LLMClient) -> str:
+    """Determines whether to continue probing (wait) or proceed to summarization, using LLM assessment."""
+    logger.info(f"--- Checking reflection depth (Probe count: {state.probe_count}) ---")
+
+    # Safety check: Max probes override
+    if state.probe_count >= MAX_PROBE_ATTEMPTS:
+        logger.warning(f"Max probe attempts ({MAX_PROBE_ATTEMPTS}) reached. Forcing summarization.")
+        return "summarize"
+
+    # LLM-based check for reflection depth
+    if not state.history or len(state.history) < 3: # Need at least init Q + user A + probe Q
+        logger.info("History too short for depth check, continuing probing.")
+        return "wait_for_input"
+    
+    formatted_history = "\n".join([f"{spk}: {utt}" for spk, utt in state.history])
+    prompt = (
+        f"Review the following conversation history between an agent and a user reflecting on a topic:\n\n{formatted_history}\n\n" 
+        f"Based *only* on this history, has the user explored their experience, challenges, feelings, or learnings "
+        f"in sufficient detail to allow for a meaningful summary? Consider if the core aspects seem covered." 
+        f" Answer only with YES or NO."
+    )
+
+    try:
+        logger.info("Asking LLM to assess reflection depth...")
+        if not llm_client.api_key:
+            raise ValueError("LLMClient API key missing for depth check.")
+        
+        # Use a relatively fast/cheap model for this check
+        response = await llm_client.get_completion(prompt, model="gpt-3.5-turbo") 
+        response_text = response.strip().upper()
+        logger.info(f"LLM depth assessment response: '{response_text}'")
+
+        if response_text.startswith("YES"):
+            logger.info("LLM assessment: Reflection depth sufficient. Routing to Summarize.")
+            return "summarize"
+        else:
+            # Assume NO or unclear response means more probing needed
+            logger.info("LLM assessment: Reflection depth insufficient. Routing to wait_for_input.")
+            return "wait_for_input"
+            
+    except Exception as e:
+        logger.error(f"Error during LLM depth check: {e}. Defaulting to continue probing.")
+        return "wait_for_input" # Default to continue probing if check fails
+
+# Define max correction attempts constant
+MAX_CORRECTION_ATTEMPTS = 2 # Allows initial attempt + 2 retries = 3 total
+
 def route_after_summary_check(state: AgentState) -> str:
     """Determines the next step after the summary check.
 
-    Args:
-        state: The current agent state.
-
-    Returns:
-        The name of the next node ('summarize' or '__end__').
+    Routes back to summarize if correction is needed and attempts are not exhausted,
+    otherwise proceeds to END.
     """
-    logger.info(f"--- Routing based on summary check (needs_correction={state.needs_correction}) ---")
+    logger.info(
+        f"--- Routing after summary check. Needs Correction: {state.needs_correction}, "
+        f"Attempts: {state.correction_attempts}/{MAX_CORRECTION_ATTEMPTS+1} ---"
+    )
+    
+    # End immediately if check was skipped
     if state.error_message and "Summary check skipped" in state.error_message:
         logger.warning("Routing to END due to skipped summary check.")
-        return END # End if check was skipped due to missing data
+        return END 
         
-    if state.needs_correction:
-        logger.info("Routing back to Summarizer.")
-        # Optionally clear the bad summary before retrying, although summarize node already does this
-        # state.summary = None 
+    # Check if correction is needed and if we have attempts left
+    if state.needs_correction and state.correction_attempts <= MAX_CORRECTION_ATTEMPTS:
+        logger.info(f"Routing back to Summarizer for correction attempt {state.correction_attempts + 1}.")
         return "summarize"
     else:
-        logger.info("Routing to END.")
+        if state.needs_correction and state.correction_attempts > MAX_CORRECTION_ATTEMPTS:
+            logger.warning(f"Max correction attempts ({MAX_CORRECTION_ATTEMPTS+1}) reached. Proceeding to END with potentially flawed summary.")
+            # Optionally add a persistent error/warning to the state
+            state.error_message = state.error_message or f"Summary failed validation after {MAX_CORRECTION_ATTEMPTS+1} attempts."
+        else: # needs_correction is False
+            logger.info("Summary approved. Routing to END.")
+            # Reset attempts counter on success (optional, good practice)
+            state.correction_attempts = 0
         return END
 
 
@@ -220,28 +325,40 @@ llm_dependency = get_llm_client()
 workflow = StateGraph(AgentState)
 
 # Add the nodes, using partial to inject the llm_client dependency
-workflow.add_node("initiate", initiate) # Initiate doesn't need the client
+workflow.add_node("initiate", initiate) 
 workflow.add_node("probe", partial(probe, llm_client=llm_dependency))
 workflow.add_node("summarize", partial(summarize, llm_client=llm_dependency))
 workflow.add_node("check_summary", partial(check_summary, llm_client=llm_dependency))
+workflow.add_node("wait_for_input", wait_for_input) # Add the new wait node
 
 # Set the entry point
 workflow.set_entry_point("initiate")
 
-# Define edges for the basic flow (conditional logic later)
-workflow.add_edge("initiate", "probe")
-workflow.add_edge("probe", "summarize")
+# Define edges
+workflow.add_edge("initiate", "probe") 
+
+# Add conditional edge after probe
+workflow.add_conditional_edges(
+    "probe",
+    # Inject llm_client dependency into the condition function
+    partial(should_continue_probing, llm_client=llm_dependency), 
+    {
+        # If probing should continue, go to the wait state
+        "wait_for_input": "wait_for_input", 
+        # If max probes reached, proceed to summarize node.
+        "summarize": "summarize" 
+    }
+)
+# Note: No edge out of wait_for_input - it's a terminal node for the invocation
+
 workflow.add_edge("summarize", "check_summary")
 
-# Remove the direct edge to END from check_summary
-# workflow.add_edge("check_summary", END)
-
-# Add the conditional edge based on the summary check
+# Add the conditional edge based on the summary check (existing)
 workflow.add_conditional_edges(
     "check_summary",
     route_after_summary_check,
     {
-        "summarize": "summarize", # Map return value to node name
+        "summarize": "summarize", 
         END: END
     }
 )

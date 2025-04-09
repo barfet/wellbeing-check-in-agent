@@ -301,3 +301,142 @@
         * README provides clear, accurate instructions for local build/run via Docker.
         * README includes a section outlining basic steps for Cloud Run deployment (e.g., gcloud commands for build, deploy).
     * **Test Cases:** Follow README instructions to build and run locally. Review Cloud Run deployment steps for clarity and theoretical correctness.
+
+---
+
+**Epic 8: Advanced Reflection Capabilities**
+
+* **Goal:** Enhance the Reflective Learning Agent with deeper conversational abilities, improved summary quality, sentiment awareness, and actionable outcomes.
+* **Value:** Moves beyond basic reflection to provide a more insightful, empathetic, and impactful experience for the user (Alex), increasing the tool's value for learning and performance improvement.
+
+---
+
+**Task 8.1: Implement Adaptive Multi-Turn Probing Dialogue**
+
+* **Story:** As Alex, I want the agent to ask me multiple relevant follow-up questions about my experience before summarizing, so that I can explore my thoughts more deeply without needing to manually continue the conversation over many separate turns.
+* **Description:** This feature enhances the `probe` phase. Instead of moving directly to `summarize` after one probe question, the agent will assess if further probing is beneficial and loop back to ask more questions until the reflection seems sufficiently developed. The decision to continue can be based on conversation length or an LLM-based assessment.
+    * **Technical Approach:**
+        1.  **Modify Graph:** Introduce a conditional edge after the `probe` node.
+        2.  **Condition Function:** Create `should_continue_probing(state: AgentState) -> str`.
+            * This function checks criteria like `len(state.history) < MIN_TURNS` (e.g., 5-7 total turns).
+            * Optionally, add an LLM call within this function: Prompt="Based on this history [history], is the reflection sufficiently detailed for a meaningful summary? YES/NO".
+            * The function returns `"probe"` to continue or `"summarize"` to proceed.
+        3.  **State Update:** Add `probe_count: int = 0` to `AgentState`. Increment in the `probe` node. Add a max limit check in `should_continue_probing` to prevent infinite loops (e.g., if `probe_count >= MAX_PROBES`, force "summarize").
+        4.  **Probe Node Update:** Ensure the `probe` node's prompt uses sufficient history to ask varied, non-repetitive questions during loops.
+        5.  **Graph Edges:** Add edge `probe` -> `probe` (if condition met) and `probe` -> `summarize` (if condition met).
+* **Acceptance Criteria:**
+    * AC1: A condition function `should_continue_probing` exists and uses state (e.g., history length, probe count) to decide the next node.
+    * AC2: The graph includes a conditional edge after `probe` routing to either `probe` or `summarize` based on `should_continue_probing`.
+    * AC3: The graph execution successfully loops back to the `probe` node at least once if the continuation condition is met.
+    * AC4: The graph includes a mechanism (e.g., max `probe_count`) to prevent infinite probing loops, eventually forcing routing to `summarize`.
+    * AC5: The `probe` node generates contextually relevant, non-identical questions during loops (verified via logging/testing).
+    * AC6: The API `/turns` response continues to return the `current_question` with `is_final_turn=False` during probe loops.
+* **Test Cases:**
+    * Unit Test: Test `should_continue_probing` logic with different `AgentState` inputs (varying history length, probe count). If using LLM check, mock it.
+    * Integration Test: Mock LLM responses for `probe`. Test the graph flow ensuring it loops correctly based on mock state conditions (e.g., short history -> loop, long history -> summarize, max probes -> summarize).
+    * API Test: Simulate a conversation via the API. Provide short answers initially, verifying the API returns multiple probe questions. Then provide longer answers, verifying it eventually proceeds to summary.
+
+---
+
+**Task 8.2: Implement Advanced Summary Self-Correction Loop**
+
+* **Story:** As Alex, I want the agent to rigorously check its own summary for accuracy and relevance against our conversation and retry generating it if needed, so that I receive a high-quality, trustworthy summary.
+* **Description:** This enhances the `check_summary` node and the surrounding logic to allow multiple attempts at generating a satisfactory summary, using more specific feedback.
+    * **Technical Approach:**
+        1.  **State Update:** Add `correction_attempts: int = 0` and `correction_feedback: Optional[str] = None` to `AgentState`.
+        2.  **`check_summary` Node Prompt:** Modify the prompt to ask for evaluation against specific criteria (e.g., "Does summary capture challenge? Success? Learning?") and request *specific feedback* if criteria are not met. E.g., "If NO, briefly state what is missing or inaccurate."
+        3.  **`check_summary` Node Logic:**
+            * Parse LLM response. If criteria met (e.g., response starts "YES"), set `needs_correction=False`, clear `correction_feedback`.
+            * If criteria not met, set `needs_correction=True`, parse and store the feedback in `state.correction_feedback`.
+        4.  **Routing Function (`route_after_summary_check`):**
+            * Check `state.needs_correction`.
+            * If `True` AND `state.correction_attempts < MAX_CORRECTION_ATTEMPTS` (e.g., 2): Return `"summarize"`.
+            * Otherwise (False OR max attempts reached): Return `END`.
+        5.  **`summarize` Node Logic:**
+            * Increment `state.correction_attempts` if `state.needs_correction` was True upon entry (or manage attempts in routing).
+            * Check if `state.correction_feedback` exists. If so, add it to the summarization prompt: "...Please regenerate the summary addressing the following feedback: [feedback]".
+            * Clear `state.correction_feedback` after using it.
+        6.  **Final State Handling:** If max attempts are reached and correction is still needed, ensure `error_message` reflects this (e.g., "Summary failed validation after multiple attempts."). The API response logic should handle this state.
+* **Acceptance Criteria:**
+    * AC1: `check_summary` prompt requests feedback based on specific criteria.
+    * AC2: `check_summary` node parses feedback and stores it in `AgentState.correction_feedback` upon failure.
+    * AC3: `AgentState` includes `correction_attempts`, which is incremented correctly during the loop.
+    * AC4: Routing logic correctly loops back to `summarize` based on `needs_correction` and `correction_attempts` < max.
+    * AC5: Routing logic correctly routes to `END` when summary is approved or max attempts are reached.
+    * AC6: `summarize` node prompt incorporates `correction_feedback` when regenerating.
+    * AC7: If max correction attempts are reached, the final state/API response indicates the summary may be suboptimal (e.g., via `error_message`).
+* **Test Cases:**
+    * Unit Test: Test `check_summary` parsing of feedback. Test `summarize` prompt generation with feedback. Test `route_after_summary_check` for multi-attempt logic.
+    * Integration Test: Mock LLM responses for `check_summary` to simulate: approval, rejection->retry->approval, rejection->retry->rejection->max attempts. Verify graph flow and state updates (`feedback`, `attempts`).
+    * API Test: Simulate a conversation where the initial summary (mocked) fails validation, verify the graph loops (may require inspecting logs or intermediate states if API only returns final result), and check the final output (either corrected summary or error state).
+
+---
+
+**Task 8.3: Integrate Sentiment Analysis to Influence Probing**
+
+* **Story:** As Alex, I want the agent to react more empathetically to my expressed feelings, perhaps by asking slightly different follow-up questions based on whether I sound positive or negative, so that the conversation feels more natural and supportive.
+* **Description:** Introduces sentiment analysis of the user's input to subtly adapt the tone or focus of the subsequent probe question.
+    * **Technical Approach:**
+        1.  **New Node:** Create an `analyze_sentiment(state: AgentState, llm_client: LLMClient) -> AgentState` node.
+        2.  **Node Logic:**
+            * Get the last user utterance from `state.history`.
+            * Call `llm_client` with a prompt: "Classify the sentiment of the user's statement: '[utterance]'. Respond only with POSITIVE, NEGATIVE, or NEUTRAL."
+            * Parse the response. Handle errors/unclear responses by defaulting to NEUTRAL.
+            * Store the result in `AgentState.last_sentiment: Optional[str]`.
+        3.  **Graph Update:** Insert this node into the flow *before* `probe`. Edges: `initiate` -> `analyze_sentiment` (or maybe after user input is confirmed?), `analyze_sentiment` -> `probe`. If multi-turn probing exists, the loop might be `probe` -> `analyze_sentiment` -> `probe`. *Decision: Place it reliably after user input is added and before probe runs.* The API logic already adds user input to state before `ainvoke`, so the sequence inside `ainvoke` should start with `analyze_sentiment`. Modify entry point or first edge accordingly. *Revised Graph Flow Idea: `(Entry: Add User Input/Initiate)` -> `analyze_sentiment` -> `probe` -> `(Condition: should_continue_probing)` -> `analyze_sentiment` (if looping) OR `summarize`.*
+        4.  **`probe` Node Update:** Modify the prompt generation logic within `probe`. Access `state.last_sentiment`. Add specific instructions based on sentiment:
+            * If NEGATIVE: "...The user expressed negativity. Ask a question focusing on understanding the challenge or feeling."
+            * If POSITIVE: "...The user expressed positivity. Ask a question exploring the success or positive feeling."
+            * If NEUTRAL (or None): Use the standard prompt.
+* **Acceptance Criteria:**
+    * AC1: New graph node `analyze_sentiment` exists and correctly calls LLM for sentiment classification.
+    * AC2: `AgentState` includes `last_sentiment`, updated by `analyze_sentiment` (defaults correctly on error).
+    * AC3: The graph structure ensures `analyze_sentiment` runs before `probe` after user input.
+    * AC4: `probe` node prompt generation logic dynamically changes based on `state.last_sentiment`.
+    * AC5: The change in prompt demonstrably influences the type of question generated by the LLM (verified via logging/testing).
+* **Test Cases:**
+    * Unit Test: Test `analyze_sentiment` node logic (mock LLM for POSITIVE/NEGATIVE/NEUTRAL/Error). Test `probe` node's prompt generation with different `last_sentiment` values in the input state.
+    * Integration Test: Mock LLM calls. Test graph flow ensuring `analyze_sentiment` runs, updates state, and `probe` receives the sentiment. Verify the correct prompt variation is generated in `probe`.
+    * API Test (Qualitative): Send API requests with user inputs having strong positive or negative sentiment. Observe the agent's next question – does it seem appropriately tailored? (Requires inspecting agent response).
+
+---
+
+**Task 8.4: Implement Post-Summary Goal-Setting Agent**
+
+* **Story:** As Alex, after reviewing the reflection summary, I want the agent to help me identify one concrete action I can take based on my reflection, so that I can turn insights into practical improvements.
+* **Description:** Adds a new conversational phase after summary approval, where the agent prompts the user to define an actionable goal. This requires extending the conversation flow and API handling.
+    * **Technical Approach:**
+        1.  **New Node:** Create `suggest_goal_step(state: AgentState, llm_client: LLMClient) -> AgentState`.
+        2.  **State Update:** Add `actionable_goal: Optional[str] = None` and `goal_setting_active: bool = False` to `AgentState`.
+        3.  **`suggest_goal_step` Logic:**
+            * Prompt LLM using `summary` and `history`: "Based on this reflection [summary/history], ask the user *one* question to help them define a small, actionable step for the future."
+            * Update `state.current_question` with the LLM response.
+            * Set `state.goal_setting_active = True`.
+            * Add the goal question to `history`.
+        4.  **Graph Update:** Change the routing after successful summary check (`route_after_summary_check`). Instead of routing to `END`, route to `suggest_goal_step` if `needs_correction is False`.
+        5.  **New Node & Final Step:** Create a simple node `capture_goal(state: AgentState) -> AgentState`. This node *only* runs if `goal_setting_active` is True and the user provides input.
+            * Logic: Get the last user utterance (the goal) from history. Store it in `state.actionable_goal`. Add a final confirmation message to history (e.g., "agent: Got it. Goal captured."). Clear `current_question`. Set `goal_setting_active = False`.
+            * Add edge `suggest_goal_step` -> `capture_goal` (This seems wrong, `capture_goal` needs user input first).
+        6.  **Revised Graph/API Interaction:**
+            * `route_after_summary_check` routes approved summaries to `suggest_goal_step`.
+            * `suggest_goal_step` sets `goal_setting_active=True` and generates `current_question`. The graph *ends* here for this invocation.
+            * API `process_turn` checks the *returned* state: if `goal_setting_active` is True and `current_question` is set, it returns the question with `is_final_turn=False`.
+            * The *next* API call from the client will have `goal_setting_active=True` in `current_state` and the user's goal in `user_input`.
+            * The graph needs an entry point or logic to detect this state. Add a conditional entry point or modify the main flow: If `state.goal_setting_active` is True upon entry, route directly to `capture_goal`.
+            * `capture_goal` runs, updates state (sets goal, clears question), and routes to `END`.
+            * API `process_turn` receives the final state from `capture_goal` -> `END`, sets `is_final_turn=True`, and returns a confirmation message.
+* **Acceptance Criteria:**
+    * AC1: New graph node `suggest_goal_step` exists and prompts LLM for a goal-setting question using summary/history.
+    * AC2: Graph routes to `suggest_goal_step` after successful summary validation.
+    * AC3: `AgentState` includes `actionable_goal` and `goal_setting_active` fields, updated correctly by `suggest_goal_step`.
+    * AC4: The API response for the turn ending with `suggest_goal_step` contains the goal question and `is_final_turn=False`.
+    * AC5: A mechanism exists (e.g., conditional entry, new `capture_goal` node) to handle the subsequent API request containing the user's goal.
+    * AC6: The user's goal input is stored in `AgentState.actionable_goal`.
+    * AC7: The final API response after capturing the goal includes a confirmation and `is_final_turn=True`.
+* **Test Cases:**
+    * Unit Test: Test `suggest_goal_step` logic (mock LLM). Test `capture_goal` logic. Test conditional graph entry/routing logic for goal phase.
+    * Integration Test: Test graph flow showing transition from summary approval to `suggest_goal_step`. Test the goal capture path.
+    * API Test: Simulate a conversation through summary approval -> verify goal question is returned (`is_final=False`). Send another request with goal input -> verify final confirmation (`is_final=True`) and check `next_state` contains the captured goal.
+
+---
+
