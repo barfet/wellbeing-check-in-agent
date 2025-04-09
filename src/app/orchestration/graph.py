@@ -16,19 +16,27 @@ llm_client = LLMClient()
 
 # Define node functions
 async def initiate(state: AgentState) -> AgentState:
-    logger.info("--- Running Initiator Node ---")
-    topic = state.topic
-    if topic:
-        question = f"Okay, let's reflect on '{topic}'. To start, could you tell me briefly what happened regarding this?"
-    else:
-        question = "Hello! What topic or experience would you like to reflect on today?"
+    # Only generate initial question if history is empty
+    if not state.history:
+        logger.info("--- Running Initiator Node (First Turn) ---")
+        topic = state.topic
+        if topic:
+            question = f"Okay, let's reflect on '{topic}'. To start, could you tell me briefly what happened regarding this?"
+        else:
+            question = "Hello! What topic or experience would you like to reflect on today?"
 
-    state.current_question = question
-    # Clear history in case this is a re-invocation or loop
-    state.history = [("agent", question)]
-    state.error_message = None # Clear previous errors
-    logger.info(f"Initiator generated question: {question}")
-    logger.debug(f"Updated State after initiate: {state}")
+        state.current_question = question
+        state.history = [("agent", question)]
+        state.error_message = None # Clear previous errors
+        logger.info(f"Initiator generated question: {question}")
+        logger.debug(f"Updated State after initiate: {state}")
+    else:
+        # If history exists, this node is being re-entered after the actual start,
+        # likely due to how astream_events restarts from the entry point.
+        # Pass the state through unchanged.
+        logger.debug("--- Initiator Node (Skipping - History already exists) ---")
+        pass # State remains unchanged
+
     return state
 
 

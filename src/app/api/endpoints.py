@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, Body, status
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, AsyncIterator, Union
+import json # Import json for potential state serialization debugging
 
 # Ensure relative imports work correctly
 from .models import ReflectionTurnRequest, ReflectionTurnResponse
@@ -11,22 +12,88 @@ from pydantic import ValidationError
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+# Nodes that produce output for the user or mark a final state
+OUTPUT_NODES = {"initiate", "probe", "summarize", "check_summary"}
+
+async def get_final_state_from_stream(stream: AsyncIterator[Dict[str, Any]], 
+                                    input_data: Union[Dict[str, Any], AgentState]) -> Dict[str, Any]: 
+    """Helper to consume the stream and get the relevant state dictionary for the *current* turn.
+       Breaks after 'probe' to return the question, otherwise captures state after summary nodes.
+    """
+    probe_state_dict = None # State after probe is hit
+    summary_state_dict = None # State after summarize/check_summary (if probe not hit or stream continues)
+    
+    async for event in stream:
+        kind = event.get("event")
+        if kind == "on_chain_end": 
+            node_name = event.get("name")
+            logger.debug(f"Node '{node_name}' ended. Event data keys: {event.get('data', {}).keys()}")
+            
+            output_data = event.get("data", {}).get("output")
+
+            current_node_state_dict = None
+            if isinstance(output_data, AgentState):
+                try:
+                    current_node_state_dict = output_data.model_dump()
+                except Exception as e:
+                    logger.error(f"Failed to dump AgentState model from node '{node_name}': {e}")
+            elif isinstance(output_data, dict):
+                current_node_state_dict = output_data
+            # else: Ignore non-state outputs
+
+            if current_node_state_dict is None:
+                continue 
+
+            # Capture state specifically after 'probe' and break
+            if node_name == "probe":
+                probe_state_dict = current_node_state_dict
+                logger.debug(f"Captured state dict after node '{node_name}'. Breaking stream consumption.")
+                break # Break after probe generates its question
+            
+            # Capture state after final nodes if probe wasn't hit/broken
+            elif node_name in {"summarize", "check_summary"}:
+                summary_state_dict = current_node_state_dict
+                logger.debug(f"Captured potential final state dict after node '{node_name}'. Will continue stream.")
+                # Don't break, let it reach END
+
+    # --- Determine what state to return --- 
+    if probe_state_dict is not None:
+        # If we broke after probe, return that state
+        logger.info("Returning state dict captured after probe.")
+        return probe_state_dict
+    elif summary_state_dict is not None:
+        # If probe didn't run/break, but summary did, return summary state
+        logger.info("Returning state dict captured after summarize/check_summary.")
+        return summary_state_dict
+    else:
+        # Fallback if no relevant state was captured
+        logger.warning("Stream ended without capturing state dict after probe or summary nodes. Returning original input data as fallback.")
+        # ... (fallback logic as before) ...
+        if isinstance(input_data, AgentState):
+            try:
+                return input_data.model_dump()
+            except Exception:
+                return {}
+        elif isinstance(input_data, dict):
+            return input_data
+        else:
+            return {}
+
 @router.post(
     "/turns",
     response_model=ReflectionTurnResponse,
     summary="Process a single turn in a reflection conversation",
-    description="Handles both the initiation and subsequent turns of a reflection conversation based on the provided state."
+    description="Handles both the initiation and subsequent turns... (using streaming)"
 )
 async def process_turn(payload: ReflectionTurnRequest = Body(...)):
-    """Processes a turn in the reflection conversation.\n\n    - If `current_state` is null, it\'s an initiation turn using `topic`.\n    - If `current_state` is provided, it\'s a subsequent turn using `user_input`.\n\n    Invokes the underlying LangGraph agent orchestrator.\n    """
+    """Processes a turn using astream_events to capture intermediate state."""
     try:
-        input_data: Dict[str, Any] | AgentState
+        input_data: Union[Dict[str, Any], AgentState]
+        current_state_provided = payload.current_state is not None
 
-        if payload.current_state:
-            # Subsequent turn
+        if current_state_provided:
             logger.info(f"Processing subsequent turn. User input: '{payload.user_input[:50]}...'")
             try:
-                # Convert incoming dict state to AgentState object
                 state = AgentState(**payload.current_state)
             except ValidationError as e:
                 logger.error(f"Invalid current_state received: {e}")
@@ -35,44 +102,38 @@ async def process_turn(payload: ReflectionTurnRequest = Body(...)):
                     detail=f"Invalid current_state provided: {e}"
                 )
 
-            # Add user input to history if provided
             if payload.user_input:
                 state.history.append(("user", payload.user_input))
             else:
-                # Handle cases where subsequent turn might not have user input
                 logger.warning("Subsequent turn received without user_input.")
-                # Potentially raise an error or handle based on application logic
-                # For now, allow it to proceed, graph nodes should handle state.
 
-            # Pass the state object to ainvoke
             input_data = state
 
         else:
-            # Initiation turn
             logger.info(f"Processing initiation turn. Topic: '{payload.topic}'")
-            if payload.user_input:
-                logger.warning("user_input provided on initiation turn, it will be ignored.")
-            # Pass the initial topic dict to ainvoke
             input_data = {"topic": payload.topic}
 
-        # Invoke the graph
-        config = {"recursion_limit": 10} # Set recursion limit for safety
-        final_state_dict: Dict[str, Any] = await app_graph.ainvoke(input_data, config=config)
+        # Stream events from the graph
+        config = {"recursion_limit": 10}
+        stream = app_graph.astream_events(input_data, config=config, version="v1") # Use v1 events
+
+        # Consume the stream to find the relevant final state for this turn
+        # This helper will iterate through and find the state after the last relevant node ran
+        final_state_dict = await get_final_state_from_stream(stream, input_data)
 
         if not final_state_dict:
-            logger.error("Graph invocation returned empty state.")
-            raise HTTPException(status_code=500, detail="Agent error: Received empty state from orchestrator.")
+            logger.error("Graph streaming returned or resulted in an empty state dictionary.")
+            raise HTTPException(status_code=500, detail="Agent error: Received empty state from orchestrator stream.")
 
-        # Convert final state dict back to AgentState object for easier access & validation
         try:
              final_state_obj = AgentState(**final_state_dict)
         except ValidationError as e:
-                logger.error(f"Graph returned invalid state dictionary: {final_state_dict}. Error: {e}")
+                logger.error(f"Graph stream resulted in invalid state dictionary: {final_state_dict}. Error: {e}")
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=f"Agent error: Orchestrator returned invalid state structure: {e}"
+                    detail=f"Agent error: Orchestrator stream returned invalid state structure: {e}"
                 )
-
+        
         # Determine agent response and final turn status
         agent_output: str
         is_final: bool
@@ -109,13 +170,13 @@ async def process_turn(payload: ReflectionTurnRequest = Body(...)):
         elif has_summary and needs_correction:
              # Case 5: Unexpected final state - summary exists but needs correction
              # This shouldn't happen if the graph routes correctly back to summarize.
-             logger.error(f"Agent ended unexpectedly with summary needing correction: {final_state_obj}")
+             logger.error(f"Agent stream ended unexpectedly with summary needing correction: {final_state_obj}")
              agent_output = "An internal error occurred during summary validation."
              is_final = True
              final_state_dict["error_message"] = final_state_dict.get("error_message", "Agent ended unexpectedly with summary needing correction.")
         else:
             # Case 6: Truly unexpected final state (no summary, no question, no error)
-            logger.error(f"Agent reached unexpected final state: {final_state_obj}")
+            logger.error(f"Agent stream reached unexpected final state: {final_state_obj}")
             agent_output = "An unexpected error occurred. Please try again."
             is_final = True # Treat unexpected states as final
             final_state_dict["error_message"] = final_state_dict.get("error_message", "Agent reached unexpected final state.")
@@ -124,7 +185,7 @@ async def process_turn(payload: ReflectionTurnRequest = Body(...)):
 
         return ReflectionTurnResponse(
             agent_response=agent_output,
-            next_state=final_state_dict, # Pass the raw dict back
+            next_state=final_state_dict, 
             is_final_turn=is_final
         )
 

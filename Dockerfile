@@ -24,6 +24,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     # Add virtual environment to PATH
     PATH="/opt/venv/bin:$PATH"
 
+# Create a non-root user and group
+RUN groupadd --system --gid 1001 appgroup && \
+    useradd --system --uid 1001 --gid appgroup appuser
+
 WORKDIR /app
 
 # Copy the virtual environment from the builder stage
@@ -31,6 +35,14 @@ COPY --from=builder /opt/venv /opt/venv
 
 # Copy the application code
 COPY ./src/app ./app
+
+# Change ownership of the app directory and venv to the non-root user
+# Ensure the user can write to logs or temp files if needed (adjust permissions accordingly)
+RUN chown -R appuser:appgroup /app && \
+    chown -R appuser:appgroup /opt/venv 
+
+# Switch to the non-root user
+USER appuser
 
 # Expose the port the app runs on
 EXPOSE 8000
