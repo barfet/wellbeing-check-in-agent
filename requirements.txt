@@ -8,3 +8,5 @@ ruff
 uvicorn
 openai
 python-dotenv
+httpx
+pytest-httpx
