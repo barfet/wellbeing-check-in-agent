@@ -91,10 +91,39 @@ async def probe(state: AgentState) -> AgentState:
 async def summarize(state: AgentState) -> AgentState:
     logger.info("--- Running Summarizer Node ---")
     state.error_message = None # Clear previous errors
-    # Placeholder logic - Actual LLM call in Task 4.1
-    summary = f"Placeholder summary based on history: {len(state.history)} turns."
-    state.summary = summary
-    logger.info(f"Generated placeholder summary: {summary}")
+    state.summary = None # Clear previous summary
+
+    if not state.history:
+        logger.warning("Summarizer node called with empty history.")
+        state.error_message = "Internal Error: Summarizer requires history."
+        return state
+
+    # Format history for the prompt
+    formatted_history = "\n".join([f"{spk}: {utt}" for spk, utt in state.history])
+    prompt = f"Based on the following conversation history between an agent and a user:\n\n{formatted_history}\n\nPlease provide a concise summary of the key points discussed, focusing on the user's reflections, challenges mentioned, and any potential learnings or insights revealed. Structure it as a short paragraph or a few bullet points."
+
+    logger.info("Generating summary with prompt...")
+
+    try:
+        # Ensure LLM Client is available
+        if not llm_client.api_key:
+            raise ValueError("OpenAI API key is not configured for LLMClient.")
+
+        summary_text = await llm_client.get_completion(prompt)
+
+        if not summary_text:
+            logger.warning("LLM returned an empty summary.")
+            state.summary = "(Summary generation failed - empty response)"
+            state.error_message = "LLM failed to generate a summary."
+        else:
+            state.summary = summary_text
+            logger.info(f"Generated summary: {summary_text[:100]}...") # Log snippet
+
+    except Exception as e:
+        logger.error(f"Error during LLM call in Summarizer node: {e}", exc_info=True)
+        state.error_message = f"Error generating summary: {e}"
+        state.summary = "(Summary generation encountered an error.)"
+
     logger.debug(f"Updated State after summarize: {state}")
     return state
 
@@ -102,13 +131,77 @@ async def summarize(state: AgentState) -> AgentState:
 async def check_summary(state: AgentState) -> AgentState:
     logger.info("--- Running Summary Checker Node ---")
     state.error_message = None # Clear previous errors
-    # Placeholder logic - Actual LLM call in Task 4.2
-    state.needs_correction = False # Assume good for now
-    logger.info(f"Summary check result: needs_correction={state.needs_correction}")
+    state.needs_correction = True # Default to needing correction unless validation passes
+
+    if not state.summary or "(Summary generation" in state.summary:
+        logger.warning(f"Skipping summary check because summary is missing or indicates generation failure: '{state.summary}'")
+        state.error_message = "Summary check skipped due to missing or failed summary."
+        # Keep needs_correction=True to potentially loop back or signal issue
+        return state
+
+    if not state.history:
+        logger.warning("Skipping summary check because history is missing.")
+        state.error_message = "Summary check skipped due to missing history."
+        return state
+
+    # Provide context for the check
+    formatted_history = "\n".join([f"{spk}: {utt}" for spk, utt in state.history])
+    prompt = f"Consider the following conversation history:\n\n{formatted_history}\n\nNow consider this summary generated from the conversation:\n\nSUMMARY:\n{state.summary}\n\nIs this summary relevant and coherent based *only* on the provided conversation history? Does it accurately reflect the main points discussed? Answer with only YES or NO."
+
+    logger.info("Checking summary coherence with LLM...")
+
+    try:
+        if not llm_client.api_key:
+            raise ValueError("OpenAI API key is not configured for LLMClient.")
+
+        response = await llm_client.get_completion(prompt, model="gpt-3.5-turbo") # Use a reliable model
+        response_text = response.strip().upper()
+
+        logger.info(f"LLM response for summary check: '{response_text}'")
+
+        if "YES" in response_text:
+            state.needs_correction = False
+            logger.info("Summary deemed coherent.")
+        else:
+            state.needs_correction = True # Keep as True if not explicitly YES
+            logger.warning(f"Summary deemed potentially incoherent or LLM response unclear ('{response_text}'). Setting needs_correction=True.")
+            state.error_message = f"Summary quality check indicated potential issues (LLM response: '{response_text}')."
+
+    except Exception as e:
+        logger.error(f"Error during LLM call in Summary Checker node: {e}", exc_info=True)
+        state.error_message = f"Error checking summary quality: {e}"
+        state.needs_correction = True # Assume correction needed if check fails
+
     logger.debug(f"Updated State after check_summary: {state}")
     return state
 
 
+# --- Define Conditional Logic --- 
+def route_after_summary_check(state: AgentState) -> str:
+    """Determines the next step after the summary check.
+
+    Args:
+        state: The current agent state.
+
+    Returns:
+        The name of the next node ('summarize' or '__end__').
+    """
+    logger.info(f"--- Routing based on summary check (needs_correction={state.needs_correction}) ---")
+    if state.error_message and "Summary check skipped" in state.error_message:
+        logger.warning("Routing to END due to skipped summary check.")
+        return END # End if check was skipped due to missing data
+        
+    if state.needs_correction:
+        logger.info("Routing back to Summarizer.")
+        # Optionally clear the bad summary before retrying, although summarize node already does this
+        # state.summary = None 
+        return "summarize"
+    else:
+        logger.info("Routing to END.")
+        return END
+
+
+# --- Define the Graph --- 
 # Define the graph
 workflow = StateGraph(AgentState)
 
@@ -126,9 +219,18 @@ workflow.add_edge("initiate", "probe")
 workflow.add_edge("probe", "summarize")
 workflow.add_edge("summarize", "check_summary")
 
-# For now, always end after checking the summary
-# Conditional logic will be added in Epic 4
-workflow.add_edge("check_summary", END)
+# Remove the direct edge to END from check_summary
+# workflow.add_edge("check_summary", END)
+
+# Add the conditional edge based on the summary check
+workflow.add_conditional_edges(
+    "check_summary",
+    route_after_summary_check,
+    {
+        "summarize": "summarize", # Map return value to node name
+        END: END
+    }
+)
 
 # Compile the graph
 app_graph = workflow.compile()

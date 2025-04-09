@@ -22,9 +22,9 @@ requires_openai_key = pytest.mark.skipif(
 
 @requires_openai_key
 @pytest.mark.asyncio
-async def test_initiate_and_probe_integration():
-    """Test the initiate and probe node functions directly, including a real LLM call in probe."""
-    initial_topic = "My recent project presentation"
+async def test_initiate_and_probe_integration(): # Renamed back
+    """Test the initiate and probe node functions directly, including a real LLM call in probe.""" # Docstring reverted
+    initial_topic = "My recent project presentation" # Reverted topic
     initial_state = AgentState(topic=initial_topic)
 
     # --- Initiate Step (direct call) --- 
@@ -45,7 +45,7 @@ async def test_initiate_and_probe_integration():
     assert initiate_question == state_after_initiate.current_question
 
     # --- Simulate User Input --- 
-    user_response = "It went reasonably well, but I felt quite nervous beforehand and during the Q&A."
+    user_response = "It went reasonably well, but I felt quite nervous beforehand and during the Q&A." # Reverted response
     # Modify the state returned by initiate
     state_before_probe = state_after_initiate
     state_before_probe.history.append(("user", user_response))
@@ -77,6 +77,6 @@ async def test_initiate_and_probe_integration():
     assert probe_question != initiate_question
 
     print(f"[Integration Test] LLM generated probe question: '{probe_question}'")
-    print("[Integration Test] Direct node calls initiate -> probe completed successfully.")
+    print("[Integration Test] Direct node calls initiate -> probe completed successfully.") # Reverted print
 
 # Optional: Add more tests for different scenarios, error handling through the graph, etc.

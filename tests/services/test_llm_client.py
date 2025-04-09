@@ -47,14 +47,26 @@ async def test_llm_client_get_completion_success(mock_async_openai_class, mock_o
     )
 
 # Test initialization warning when API key is missing
-@patch.dict(os.environ, {}, clear=True) # Ensure API key is not present
+# Patch os.getenv specifically where it's used in the llm_client module
+@patch('app.services.llm_client.os.getenv', return_value=None)
 @patch('app.services.llm_client.logger.warning') # Mock logger
-def test_llm_client_init_no_api_key(mock_logger_warning):
+# @patch('app.services.llm_client.load_dotenv') # No longer mocking load_dotenv here
+def test_llm_client_init_no_api_key(mock_logger_warning, mock_getenv):
     """Test that a warning is logged if OPENAI_API_KEY is missing."""
+    # Ensure getenv returns None for the specific key check
+    def getenv_side_effect(key, default=None):
+        if key == "OPENAI_API_KEY":
+            return None
+        return os.environ.get(key, default) # Allow other env vars potentially
+    mock_getenv.side_effect = getenv_side_effect
+    
     LLMClient()
+    # Assert warning was called
     mock_logger_warning.assert_called_once_with(
         "OPENAI_API_KEY not found in environment variables."
     )
+    # Verify os.getenv was called for the API key
+    mock_getenv.assert_any_call("OPENAI_API_KEY")
 
 # Test get_completion raises ValueError when API key is missing
 @pytest.mark.asyncio
